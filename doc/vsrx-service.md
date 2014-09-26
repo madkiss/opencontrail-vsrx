@@ -24,7 +24,7 @@ http://www.juniper.net/support/downloads/?p=firefly#sw
 ```
 
 ##1.2 Launch vSRX instance
-The minimum resource required by vSRX is 2 vCPUs and 1GB memory. Assume a network is already configured in tennant demo.
+The minimum resource required by vSRX is 2 vCPUs and 2GB memory. Assume a network is already configured in tennant demo.
 ```
 # nova --os-username <admin username> --os-password <admin password> --os-tenant-name demo --os-auth-url http://127.0.0.1:5000/v2.0/ boot vsrx --flavor m1.medium --image "vSRX 12.1X46-D20.5" --nic net-id=<network UUID>
 ```
@@ -40,7 +40,7 @@ This is the standard option for OpenStack to pass data into VM after launching i
 This is another option for OpenStack to transfer data into VM. Potentially, a configuration file can be injected into vSRX and get applied. This is not supported by vSRX yet.
 
 ###1.3.3 Sysinfo
-This is the only option supported by vSRX to get data for initial configuration. But it's not supported by OpenStack. To make this work with OpenStack, one additionaly line needs to be added into function `get_guest_config_sysinfo()` in `class LibvirtDriver()` in nova/virt/libvirt/driver.py. And service openstack-nova-compute needs to be restarted to apply the update.
+This is the only option supported by vSRX to get data for initial configuration. But it's not supported by OpenStack. To make this work with OpenStack, one additionaly line needs to be added into function `get_guest_config_sysinfo()` in `class LibvirtDriver()` in driver.py (eg. /usr/lib/python2.7/dist-packages/nova/virt/libvirt/driver.py in Ubuntu, /usr/lib/python2.6/site-packages/nova/virt/libvirt/driver.py in CentOS). And service openstack-nova-compute needs to be restarted to apply the update.
 ```
          sysinfo.system_serial = self.get_host_uuid()
          sysinfo.system_uuid = instance['uuid']
@@ -48,12 +48,12 @@ This is the only option supported by vSRX to get data for initial configuration.
 
          return sysinfo
 ```
-The root password `rootpw` is the hashed string of 'passWD'.
+The root password `rootpw` is the Junos hashed string of 'passWD'. This default password is only for the initial login to vSRX. During vSRX provisioning, user can change the password or set any other security options.
 ```
 # service openstack-nova-compute restart
 ```
 
-This update will add new entry into /var/lib/nova/instances/<uuid>/libvirt.xml for libvirt to create the VM. There is a script in vSRX to read this sysinfo and apply it to configuration. This is the automatic initial provistioning without manual configuration.
+This update will add new entry into /var/lib/nova/instances/<uuid>/libvirt.xml when libvirt to create the VM. There is a script in vSRX to read this sysinfo and apply it to configuration. This is the automatic initial provistioning without manual configuration.
 
 With this initial configuration, network, SSH and web based management are enabled. To provisition vSRX by NETCONF, two more configurations are required, [ system services netconf ssh ] and [ security zones security-zone trust interfaces ge-0/0/0.0 host-inbound-traffic system-services all ]. They can be configured by SSH.
 
@@ -72,14 +72,14 @@ vSRX can be launched by Contrail service monitor as a service in service chain.
 ## 3.2 Preparations
 Given a fresh installation, some configurations need to be done to prepare the demo. Some utilities are required from Github.
 * As described in 1.3.3, nova needs to be updated on all compute nodes.
-* Get code from GitHub.
+* Install git and get utilities from GitHub.
 ```
 # git clone https://github.com/tonyliu0592/opencontrail-config.git
 # git clone https://github.com/tonyliu0592/opencontrail-vsrx.git
 # git clone https://github.com/leopoul/ncclient.git
 # export PYTHONPATH=$PYTHONPATH:/path/to/ncclient:/path/to/opencontrail-config
 ```
-Check script `opencontrail-config/config` to confirm default settings.
+Check `default_client_args` in `opencontrail-config/config` to confirm default settings.
 * VN "management" and "public" with public address in administration tenant
 ```
 # cd /path/to/opencontrail-config
@@ -227,7 +227,7 @@ Once the cloud is prepared, running utility `vsrx-nat` will do the followings.
 * Attach the management, left and right interfaces of vSRX service instance on management, access and public virtual networks respectively.
 * Enable NETCONF service on vSRX.
 * Provisioning vSRX for NAT service.
-Check default settings in vsrx-nat before running it.
+Check `default_client_args` in `vsrx-nat` in vsrx-nat before running it.
 ```
 # cd /path/to/opencontrail-vsrx
 # ./vsrx-nat --management-network network=management,tenant=admin --private-network network=access,route=0.0.0.0/0 --public-network network=public,tenant=admin start
