@@ -11,33 +11,6 @@ class VsrxNat():
         self.parser_init()
         self.vsrx = Vsrx(username = 'root', password = 'passWD')
 
-    def service_launch(self, api_client, mgmt_net, private_net, public_net):
-        print 'Launch service instance.'
-        si = ConfigServiceInstance(api_client)
-        net_list = [mgmt_net, private_net, public_net]
-        si.add(name = 'vsrx-nat', template = 'vsrx-nat',
-                network_list = net_list)
-
-        print 'Waiting for service instance to be active...'
-        timeout = 12
-        while timeout:
-            time.sleep(3)
-            vm = api_client.nova.servers.find(name = 'vsrx-nat_1')
-            if vm.status != 'BUILD':
-                print 'Service instance %s is %s' %(vm.name, vm.status)
-                break
-            timeout -= 1
-        mgmt_addr = vm.addresses['management'][0]['addr']
-        self.vsrx.mgmt_addr_set(mgmt_addr)
-
-        #print 'Post-launch configuration.'
-        #vm_if = ConfigVmInterface(api_client)
-        #vm_if.delete(name = 'management', sg = 'default', vm_id = vm.id)
-        #vm_if.delete(name = 'public', sg = 'default', vm_id = vm.id)
-        #vm_if.delete(name = 'access', sg = 'default', vm_id = vm.id)
-
-        self.vsrx.netconf_enable()
-
     def service_provision(self):
         print 'Provisioning service...'
 
@@ -139,8 +112,10 @@ class VsrxNat():
         api_client = ConfigClient(args.username, args.password, args.tenant,
                 args.region, args.api_server)
         if (args.action == 'start'):
-            self.service_launch(api_client, args.management_network,
-                    args.private_network, args.public_network)
+            net_list = [args.management_network, args.private_network,
+                    args.public_network]
+            self.vsrx.launch('vsrx-nat', 'vsrx-nat', api_client, net_list)
+            self.vsrx.netconf_enable()
             self.service_provision()
         elif (args.action == 'stop'):
             self.service_delete(api_client)

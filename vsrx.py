@@ -7,14 +7,11 @@ from ncclient import manager as netconf
 from ncclient.xml_ import *
 
 class Vsrx():
-    def __init__(self, username, password, addr = None):
+    def __init__(self, username, password):
         self.username = username
         self.password = password
-        self.mgmt_addr = addr
+        self.mgmt_addr = None
         self.nc_client = None
-
-    def mgmt_addr_set(self, addr):
-        self.mgmt_addr = addr
 
     def nc_session_open(self):
         self.nc_client = netconf.connect(host = self.mgmt_addr, port = 830,
@@ -37,6 +34,28 @@ class Vsrx():
         self.nc_client.load_configuration(action = 'set', config = list)
         self.nc_client.commit()
         time.sleep(5)
+
+    def launch(self, name, template, api_client, net_list):
+        print 'Launch service instance.'
+        si = ConfigServiceInstance(api_client)
+        si.add(name = name, template = template, network_list = net_list)
+
+        print 'Waiting for service instance to be active...'
+        timeout = 12
+        while timeout:
+            time.sleep(3)
+            vm = api_client.nova.servers.find(name = '%s_1' %(name))
+            if vm.status != 'BUILD':
+                print 'Service instance %s is %s' %(vm.name, vm.status)
+                break
+            timeout -= 1
+        self.mgmt_addr = vm.addresses['management'][0]['addr']
+
+        #print 'Post-launch configuration.'
+        #vm_if = ConfigVmInterface(api_client)
+        #vm_if.delete(name = 'management', sg = 'default', vm_id = vm.id)
+        #vm_if.delete(name = 'public', sg = 'default', vm_id = vm.id)
+        #vm_if.delete(name = 'access', sg = 'default', vm_id = vm.id)
 
     def netconf_enable(self):
         ssh = paramiko.SSHClient()
