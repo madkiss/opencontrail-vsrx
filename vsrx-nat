@@ -1,0 +1,141 @@
+#!/usr/bin/python
+
+import time
+import argparse
+from vsrx import *
+from config_obj import *
+
+class VsrxNat():
+
+    def __init__(self):
+        self.parser_init()
+        self.vsrx = Vsrx(username = 'root', password = 'passWD')
+
+    def service_launch(self, api_client, mgmt_net, private_net, public_net):
+        print 'Launch service instance.'
+        si = ConfigServiceInstance(api_client)
+        net_list = [mgmt_net, private_net, public_net]
+        si.add(name = 'vsrx-nat', template = 'vsrx-nat',
+                network_list = net_list)
+
+        print 'Waiting for service instance to be active...'
+        timeout = 12
+        while timeout:
+            time.sleep(3)
+            vm = api_client.nova.servers.find(name = 'vsrx-nat_1')
+            if vm.status != 'BUILD':
+                print 'Service instance %s is %s' %(vm.name, vm.status)
+                break
+            timeout -= 1
+        mgmt_addr = vm.addresses['management'][0]['addr']
+        self.vsrx.mgmt_addr_set(mgmt_addr)
+
+        #print 'Post-launch configuration.'
+        #vm_if = ConfigVmInterface(api_client)
+        #vm_if.delete(name = 'management', sg = 'default', vm_id = vm.id)
+        #vm_if.delete(name = 'public', sg = 'default', vm_id = vm.id)
+        #vm_if.delete(name = 'access', sg = 'default', vm_id = vm.id)
+
+        self.vsrx.netconf_enable()
+
+    def service_provision(self):
+        print 'Provisioning service...'
+
+        list = []
+        cmd = 'set interfaces ge-0/0/1 unit 0 family inet'
+        list.append('%s ge-0/0/1 unit 0 family inet ' \
+                'filter input pbf-left-right' %(cmd))
+        list.append('%s ge-0/0/1 unit 0 family inet dhcp' %(cmd))
+        list.append('%s ge-0/0/2 unit 0 family inet dhcp' %(cmd))
+
+        cmd = 'set security nat source rule-set if-nat'
+        list.append('%s from interface ge-0/0/1.0' %(cmd))
+        list.append('%s to interface ge-0/0/2.0' %(cmd))
+        list.append('%s rule r1 match source-address 0.0.0.0/0' %(cmd))
+        list.append('%s rule r1 match destination-address 0.0.0.0/0' %(cmd))
+        list.append('%s rule r1 then source-nat interface' %(cmd))
+
+        cmd = 'set security policies from-zone left to-zone right policy'
+        list.append('%s allow-any match source-address any' %(cmd))
+        list.append('%s allow-any match destination-address any' %(cmd))
+        list.append('%s allow-any match application any' %(cmd))
+        list.append('%s allow-any then permit' %(cmd))
+
+        cmd = 'set security policies from-zone right to-zone left policy'
+        list.append('%s allow-any match source-address any' %(cmd))
+        list.append('%s allow-any match destination-address any' %(cmd))
+        list.append('%s allow-any match application any' %(cmd))
+        list.append('%s allow-any then permit' %(cmd))
+
+        cmd = 'set security zones security-zone'
+        list.append('%s left interfaces ge-0/0/1.0 host-inbound-traffic ' \
+                'system-services all' %(cmd))
+        list.append('%s right interfaces ge-0/0/2.0 host-inbound-traffic ' \
+                'system-services all' %(cmd))
+
+        list.append('set firewall family inet filter pbf-left-right ' \
+                'term any then routing-instance right')
+
+        cmd = 'set routing-instances'
+        list.append('%s left instance-type virtual-router' %(cmd))
+        list.append('%s left interface ge-0/0/1.0' %(cmd))
+        list.append('%s right instance-type virtual-router' %(cmd))
+        list.append('%s right interface ge-0/0/2.0' %(cmd))
+
+        self.vsrx.nc_session_open()
+        self.vsrx.config_set(list)
+        self.vsrx.nc_session_close()
+
+
+    def parser_init(self):
+        parser = argparse.ArgumentParser()
+        parser.add_argument('--api-server', help = 'API server address')
+        parser.add_argument('--username', help = 'User name')
+        parser.add_argument('--password', help = 'Password')
+        parser.add_argument('--tenant', help = 'Tenant name')
+        parser.add_argument('--region', help = 'Region name')
+        parser.add_argument('--management-network',
+                metavar = '<arguments>',
+                help = 'Arguments of management virtual network ' \
+                       'network=<name>,route=<prefix>/<length>' \
+                       'tenant=<name>')
+        parser.add_argument('--private-network',
+                metavar = '<arguments>',
+                help = 'Arguments of private virtual network ' \
+                       'network=<name>,route=<prefix>/<length>' \
+                       'tenant=<name>')
+        parser.add_argument('--public-network',
+                metavar = '<arguments>',
+                help = 'Arguments of public virtual network ' \
+                       'network=<name>,route=<prefix>/<length>' \
+                       'tenant=<name>')
+
+        self.parser = parser
+
+    def parse(self, argv = None):
+        args = self.parser.parse_args(args = argv)
+        return args
+
+    def main(self):                                           
+        args = self.parse()                                   
+        api_client = ConfigClient(args.username, args.password, args.tenant,
+                args.region, args.api_server)
+        self.service_launch(api_client, args.management_network,
+                args.private_network, args.public_network)
+        self.service_provision()
+
+
+default_client_args = [
+    ('--username', 'admin'),
+    ('--password', 'contrail123'),
+    ('--region', 'RegionOne'),
+    ('--tenant', 'demo'),
+    ('--api-server', '127.0.0.1')]
+
+if __name__ == '__main__':                                    
+    for arg in default_client_args:                           
+        if not arg[0] in sys.argv:                            
+            sys.argv.insert(1, arg[0])                        
+            sys.argv.insert(2, arg[1])                        
+    VsrxNat().main()
+
