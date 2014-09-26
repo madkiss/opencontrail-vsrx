@@ -3,7 +3,7 @@
 import time
 import argparse
 from vsrx import *
-from config_obj import *
+from opencontrail_config.config_obj import *
 
 class VsrxNat():
 
@@ -42,7 +42,8 @@ class VsrxNat():
         print 'Provisioning service...'
 
         list = []
-        cmd = 'set interfaces ge-0/0/1 unit 0 family inet'
+        list.append('set system host-name vsrx-nat')
+        cmd = 'set interfaces'
         list.append('%s ge-0/0/1 unit 0 family inet ' \
                 'filter input pbf-left-right' %(cmd))
         list.append('%s ge-0/0/1 unit 0 family inet dhcp' %(cmd))
@@ -89,6 +90,8 @@ class VsrxNat():
 
     def parser_init(self):
         parser = argparse.ArgumentParser()
+        parser.add_argument('action', choices = ['start', 'stop'],
+                metavar = '<action>', help = '[ start | stop ]')
         parser.add_argument('--api-server', help = 'API server address')
         parser.add_argument('--username', help = 'User name')
         parser.add_argument('--password', help = 'Password')
@@ -112,6 +115,21 @@ class VsrxNat():
 
         self.parser = parser
 
+    def service_delete(self, api_client):
+        si = ConfigServiceInstance(api_client)
+        si.delete(name = 'vsrx-nat')
+        count = 0
+        while (count < 30):
+            print 'Waiting for service instance to be deleted...%d' %(count)
+            try:
+                vm = api_client.nova.servers.find(name = 'vsrx-nat_1')
+                count += 1
+                time.sleep(2)
+                continue
+            except:
+                print 'Service instance is deleted.'
+                break
+
     def parse(self, argv = None):
         args = self.parser.parse_args(args = argv)
         return args
@@ -120,9 +138,12 @@ class VsrxNat():
         args = self.parse()                                   
         api_client = ConfigClient(args.username, args.password, args.tenant,
                 args.region, args.api_server)
-        self.service_launch(api_client, args.management_network,
-                args.private_network, args.public_network)
-        self.service_provision()
+        if (args.action == 'start'):
+            self.service_launch(api_client, args.management_network,
+                    args.private_network, args.public_network)
+            self.service_provision()
+        elif (args.action == 'stop'):
+            self.service_delete(api_client)
 
 
 default_client_args = [
