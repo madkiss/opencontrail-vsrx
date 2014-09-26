@@ -2,7 +2,7 @@
 import sys
 import time
 import paramiko
-from config_obj import *
+from opencontrail_config.config_obj import *
 from ncclient import manager as netconf
 from ncclient.xml_ import *
 
@@ -22,20 +22,20 @@ class Vsrx():
                 hostkey_verify = False, device_params={'name':'junos'})
 
     def nc_session_close(self):
-        self.client.close_session()
-        self.client = None
+        self.nc_client.close_session()
+        self.nc_client = None
 
     def config_get(self, filter):
-        if not self.client:
+        if not self.nc_client:
             return
-        result = self.client.get_config('running', filter = filter)
+        result = self.nc_client.get_config('running', filter = filter)
         return result
 
     def config_set(self, list):
-        if not self.client:
+        if not self.nc_client:
             return
-        self.client.load_configuration(action = 'set', config = list)
-        self.client.commit()
+        self.nc_client.load_configuration(action = 'set', config = list)
+        self.nc_client.commit()
         time.sleep(5)
 
     def netconf_enable(self):
