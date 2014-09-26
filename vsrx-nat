@@ -9,7 +9,6 @@ class VsrxNat():
 
     def __init__(self):
         self.parser_init()
-        self.vsrx = Vsrx(username = 'root', password = 'passWD')
 
     def service_provision(self):
         print 'Provisioning service...'
@@ -56,9 +55,7 @@ class VsrxNat():
         list.append('%s right instance-type virtual-router' %(cmd))
         list.append('%s right interface ge-0/0/2.0' %(cmd))
 
-        self.vsrx.nc_session_open()
         self.vsrx.config_set(list)
-        self.vsrx.nc_session_close()
 
 
     def parser_init(self):
@@ -88,37 +85,24 @@ class VsrxNat():
 
         self.parser = parser
 
-    def service_delete(self, api_client):
-        si = ConfigServiceInstance(api_client)
-        si.delete(name = 'vsrx-nat')
-        count = 0
-        while (count < 30):
-            print 'Waiting for service instance to be deleted...%d' %(count)
-            try:
-                vm = api_client.nova.servers.find(name = 'vsrx-nat_1')
-                count += 1
-                time.sleep(2)
-                continue
-            except:
-                print 'Service instance is deleted.'
-                break
-
     def parse(self, argv = None):
         args = self.parser.parse_args(args = argv)
         return args
 
     def main(self):                                           
         args = self.parse()                                   
-        api_client = ConfigClient(args.username, args.password, args.tenant,
-                args.region, args.api_server)
+        config_client = ConfigClient(args.username, args.password,
+                args.tenant, args.region, args.api_server)
+        self.vsrx = Vsrx(name = 'vsrx-nat', username = 'root',
+                password = 'passWD', config_client = config_client)
         if (args.action == 'start'):
             net_list = [args.management_network, args.private_network,
                     args.public_network]
-            self.vsrx.launch('vsrx-nat', 'vsrx-nat', api_client, net_list)
+            self.vsrx.launch(template = 'vsrx-nat', net_list = net_list)
             self.vsrx.netconf_enable()
             self.service_provision()
         elif (args.action == 'stop'):
-            self.service_delete(api_client)
+            self.vsrx.delete()
 
 
 default_client_args = [

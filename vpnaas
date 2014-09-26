@@ -3,148 +3,26 @@
 import sys
 import time
 import argparse
-import paramiko
-from config_obj import *
-from ncclient import manager as netconf
-from ncclient.xml_ import *
-
-class VpnNetconf():
-    def __init__(self):
-        self.client = None
-
-    def session_open(self, svc_client, mgmt_addr = None):
-        if not mgmt_addr:
-            service = VpnService(svc_client)
-            print 'Looking for service...'
-            if not service.obj_check(service.name):
-                print 'No service available.'
-                return
-            mgmt_addr = service.mgmt_addr_get()
-        self.client = netconf.connect(host = mgmt_addr, port = 830,
-                username = 'root', password = 'passWD',
-                hostkey_verify = False, device_params={'name':'junos'})
-        return self.client
-
-    def session_close(self):
-        self.client.close_session()
-
-    def config_get(self, filter, svc_client):
-        client = self.session_open(svc_client)
-        if not client:
-            return
-        result = client.get_config('running', filter = filter)
-        client.close_session()
-        return result
-
-    def config_set(self, list, svc_client = None, mgmt_addr = None):
-        client = self.session_open(svc_client, mgmt_addr)
-        if not client:
-            return
-        client.load_configuration(action = 'set', config = list)
-        client.commit()
-        time.sleep(5)
-        client.close_session()
-
+from vsrx import *
+from opencontrail_config.config_obj import *
 
 class VpnService():
-    def __init__(self, client):
-        self.mgmt_addr = None
-        self.client = client
-        self.name = 'vsrx-vpn-' + client.tenant.name
-        self.svc = ConfigServiceInstance(client = client)
-
-    def gateway_get(self, name):
-        vn = self.client.vnc.virtual_network_read(
-                fq_name = ['default-domain', 'admin', name])
-        ipam = vn.get_network_ipam_refs()[0]
-        subnet = ipam['attr'].get_ipam_subnets()[0]
-        return subnet.get_default_gateway()
-
-    def mgmt_addr_get(self):
-        vm = self.client.nova.servers.find(name = self.name + '_1')
-        mgmt_addr = vm.addresses['management'][0]['addr']
-        return mgmt_addr
-
-    def obj_check(self, name):
-        for item in self.svc.obj_list():
-            if (item['fq_name'][2] == name):
-                return True
+    def __init__(self, vsrx):
+        self.vsrx = vsrx
 
     def show(self, name = None):
-        if self.obj_check(self.name):
+        if self.vsrx.check():
             print 'Service exists.'
         else:
             print 'No service.'
 
-    def vm_create(self, name):
-        print 'Launch service instance.'
-        #vn = ConfigNetwork(client = self.client)
-        #vn_name = 'vpn-' + self.client.tenant.name
-        #vn.add(name = vn_name, ipam = 'ipam-default', subnet = '100.64.10.0/24')
-        self.svc.add(name = self.name, template = 'vsrx-vpn',
-                mgmt_net = 'admin:management',
-                left_net = 'access', left_route = '0.0.0.0/0',
-                right_net = 'admin:public')
-        count = 0
-        while (count < 30):
-            print 'Waiting for VM to be created...%d' %(count)
-            try:
-                vm = self.client.nova.servers.find(name = self.name + '_1')
-                print 'VM is created.'
-                break
-            except:
-                count += 1
-                time.sleep(5)
-
-        count = 0
-        while (count < 30):
-            print 'VM is in the state of %s...%d' %(vm.status, count)
-            vm = self.client.nova.servers.find(name = self.name + '_1')
-            if vm.status == 'ACTIVE':
-                print 'VM %s is %s' %(vm.name, vm.status)
-                break
-            count += 1
-            time.sleep(3)
-        self.mgmt_addr = vm.addresses['management'][0]['addr']
-
-        print 'Post-launch configuration.'
-        vm_if = ConfigVmInterface(client = self.client)
-        vm_if.delete(name = 'access', sg = 'default', vm_id = vm.id)
-        vm_if.delete(name = 'management', sg = 'default', vm_id = vm.id)
-        vm_if.delete(name = 'public', sg = 'default', vm_id = vm.id)
-
-    def service_boot(self):
-        ssh = paramiko.SSHClient()
-        ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        count = 0
-        while True:
-            print 'Waiting for service booting up...%d' %(count)
-            try:
-                ssh.connect(self.mgmt_addr, username = 'root',
-                        password = 'passWD', timeout = 5)
-                break
-            except:
-                count += 1
-        return ssh
-
-    def netconf_enable(self, ssh):
-        print 'Enable NETCONF...'
-        cmd = 'cli -c "configure;' + \
-                'set system services netconf ssh;' + \
-                'set security zones security-zone trust interfaces ' + \
-                    'ge-0/0/0.0 host-inbound-traffic system-services all;' + \
-                'commit"'
-        ssh.exec_command(cmd)
-        time.sleep(8)
-        ssh.close()
-
     def service_init(self):
         list = []
         list.append('delete security')
-        list.append('set system host-name %s' %(self.name))
+        list.append('set system host-name %s' %(self.vsrx.name))
         list.append('set interfaces ge-0/0/1 unit 0 family inet dhcp')
         list.append('set interfaces ge-0/0/2 unit 0 family inet dhcp')
-        gw = self.gateway_get(name = 'management')
+        gw = self.vsrx.gateway_get(net_name = 'management')
         list.append('set routing-options static route 0/0 next-hop %s' %(gw))
         cmd = 'set security policies from-zone trust to-zone trust policy'
         list.append('%s default-permit match source-address any' %(cmd))
@@ -160,48 +38,29 @@ class VpnService():
         list.append('%s right host-inbound-traffic system-services all' %(cmd))
         list.append('%s right interfaces ge-0/0/2.0' %(cmd))
 
-        nc = VpnNetconf()
         print 'Load initial configuration...'
-        nc.config_set(list = list, svc_client = self.client,
-                mgmt_addr = self.mgmt_addr)
+        self.vsrx.config_set(list)
 
-    def add(self, name):
-        if self.obj_check(self.name):
+    def add(self, name, network_management, network_private, network_public):
+        if self.vsrx.check():
             print 'Service exists.'
             return
-        self.vm_create(name)
-        ssh = self.service_boot()
-        self.netconf_enable(ssh)
+        net_list = [network_management, network_private, network_public]
+        self.vsrx.launch(template = 'vsrx-vpn', net_list = net_list)
+        self.vsrx.netconf_enable()
         self.service_init()
         print 'Service is up.'
 
     def delete(self, name):
-        if not self.obj_check(self.name):
+        if not self.vsrx.check():
             print 'No service to be deleted.'
             return
-        self.svc.delete(self.name)
-        count = 0
-        while (count < 30):
-            print 'Waiting for VM instance to be deleted...%d' %(count)
-            try:
-                vm = self.client.nova.servers.find(name = self.name + '_1')
-                count += 1
-                time.sleep(2)
-                continue
-            except:
-                print 'Service instance is deleted.'
-                break
-        #print 'Waiting for clean up...'
-        #time.sleep(10)
-        #vn = ConfigNetwork(client = self.client)
-        #vn_name = 'vpn-' + self.client.tenant.name
-        #vn.delete(name = vn_name)
-        print 'Service is deleted.'
+        self.vsrx.delete()
 
 
 class VpnIkePolicy():
-    def __init__(self, client):
-        self.client = client
+    def __init__(self, vsrx):
+        self.vsrx = vsrx
 
     def show(self, name = None):
         filter_root = new_ele('filter')
@@ -209,8 +68,7 @@ class VpnIkePolicy():
         filter_security = sub_ele(filter_config, 'security')
         sub_ele(filter_security, 'ike')
 
-        nc = VpnNetconf()
-        result = nc.config_get(filter = filter_root, svc_client = self.client)
+        result = self.vsrx.config_get(filter = filter_root)
 
         ike = result.xpath('data/configuration/security/ike')[0]
         for policy in ike.xpath('policy'):
@@ -230,34 +88,36 @@ class VpnIkePolicy():
     def add(self, name, auth_algo = None, encryp_algo = None, mode = None):
         list = []
         cmd = 'set security ike'
-        list.append('%s proposal %s authentication-method pre-shared-keys' %(cmd, name))
+        list.append('%s proposal %s authentication-method pre-shared-keys' \
+                %(cmd, name))
         list.append('%s proposal %s dh-group group2' %(cmd, name))
         list.append('%s policy %s proposals %s' %(cmd, name, name))
-        list.append('%s policy %s pre-shared-key ascii-text "$9$W-FxVwGDiPTzZU9pBRle4aZUjqf5F6CuTQcl"' %(cmd, name))
+        list.append('%s policy %s pre-shared-key ascii-text ' \
+                '"$9$W-FxVwGDiPTzZU9pBRle4aZUjqf5F6CuTQcl"' %(cmd, name))
         if auth_algo:
-            list.append('%s proposal %s authentication-algorithm %s' %(cmd, name, auth_algo))
+            list.append('%s proposal %s authentication-algorithm %s' \
+                    %(cmd, name, auth_algo))
         if encryp_algo:
-            list.append('%s proposal %s encryption-algorithm %s' %(cmd, name, encryp_algo))
+            list.append('%s proposal %s encryption-algorithm %s' \
+                    %(cmd, name, encryp_algo))
         if mode:
             list.append('%s policy %s mode %s' %(cmd, name, mode))
 
-        nc = VpnNetconf()
         print 'Adding...'
-        nc.config_set(list = list, svc_client = self.client)
+        self.vsrx.config_set(list)
 
     def delete(self, name):
         list = []
         list.append('delete security ike proposal %s' %(name))
         list.append('delete security ike policy %s' %(name))
 
-        nc = VpnNetconf()
         print 'Deleting...'
-        nc.config_set(list = list, svc_client = self.client)
+        self.vsrx.config_set(list)
 
 
 class VpnIpsecPolicy():
-    def __init__(self, client):
-        self.client = client
+    def __init__(self, vsrx):
+        self.vsrx = vsrx
 
     def show(self, name = None):
         filter_root = new_ele('filter')
@@ -265,8 +125,7 @@ class VpnIpsecPolicy():
         filter_security = sub_ele(filter_config, 'security')
         sub_ele(filter_security, 'ipsec')
 
-        nc = VpnNetconf()
-        result = nc.config_get(filter = filter_root, svc_client = self.client)
+        result = self.vsrx.config_get(filter = filter_root)
 
         ipsec = result.xpath('data/configuration/security/ipsec')[0]
         for policy in ipsec.xpath('policy'):
@@ -286,44 +145,37 @@ class VpnIpsecPolicy():
         cmd = 'set security ipsec'
         list.append('%s proposal %s protocol esp' %(cmd, name))
         list.append('%s policy %s proposals %s' %(cmd, name, name))
-        list.append('%s policy %s perfect-forward-secrecy keys group2' %(cmd, name))
+        list.append('%s policy %s perfect-forward-secrecy keys group2' \
+                %(cmd, name))
         if auth_algo:
-            list.append('%s proposal %s authentication-algorithm %s' %(cmd, name, auth_algo))
+            list.append('%s proposal %s authentication-algorithm %s' \
+                    %(cmd, name, auth_algo))
         if encryp_algo:
-            list.append('%s proposal %s encryption-algorithm %s' %(cmd, name, encryp_algo))
+            list.append('%s proposal %s encryption-algorithm %s' \
+                    %(cmd, name, encryp_algo))
 
-        nc = VpnNetconf()
         print 'Adding...'
-        nc.config_set(list = list, svc_client = self.client)
+        self.vsrx.config_set(list = list)
 
     def delete(self, name):
         list = []
         list.append('delete security ipsec proposal %s' %(name))
         list.append('delete security ipsec policy %s' %(name))
 
-        nc = VpnNetconf()
         print 'Deleting...'
-        nc.config_set(list = list, svc_client = self.client)
+        vsrx.config_set(list = list)
 
 
 class VpnConnection():
-    def __init__(self, client):
-        self.client = client
-
-    def gateway_get(self, name):
-        vn = self.client.vnc.virtual_network_read(
-                fq_name = ['default-domain', 'admin', name])
-        ipam = vn.get_network_ipam_refs()[0]
-        subnet = ipam['attr'].get_ipam_subnets()[0]
-        return subnet.get_default_gateway()
+    def __init__(self, vsrx):
+        self.vsrx = vsrx
 
     def show(self, name = None):
         filter_root = new_ele('filter')
         filter_config = sub_ele(filter_root, 'configuration')
         sub_ele(filter_config, 'security')
 
-        nc = VpnNetconf()
-        result = nc.config_get(filter = filter_root, svc_client = self.client)
+        result = self.vsrx.config_get(filter = filter_root)
 
         vpn_list = result.xpath('data/configuration/security/ipsec/vpn')
         for vpn in vpn_list:
@@ -332,9 +184,11 @@ class VpnConnection():
     def add(self, name, ike_policy = None, ipsec_policy = None,
             dst_subnet = None, peer_address = None):
         list = []
-        gw = self.gateway_get(name = 'public')
-        list.append('set routing-options static route %s next-hop %s' %(dst_subnet, gw))
-        list.append('set security address-book book-vpn address %s %s' %(name, dst_subnet))
+        gw = self.vsrx.gateway_get(net_name = 'public')
+        list.append('set routing-options static route %s next-hop %s' \
+                %(dst_subnet, gw))
+        list.append('set security address-book book-vpn address %s %s' \
+                %(name, dst_subnet))
         cmd = 'set security ike gateway'
         list.append('%s %s ike-policy %s' %(cmd, name, ike_policy))
         list.append('%s %s address %s' %(cmd, name, peer_address))
@@ -347,18 +201,21 @@ class VpnConnection():
         list.append('%s vpn-left-right match source-address any' %(cmd))
         list.append('%s vpn-left-right match destination-address any' %(cmd))
         list.append('%s vpn-left-right match application any' %(cmd))
-        list.append('%s vpn-left-right then permit tunnel ipsec-vpn %s' %(cmd, name))
-        list.append('%s vpn-left-right then permit tunnel pair-policy vpn-right-left' %(cmd))
+        list.append('%s vpn-left-right then permit tunnel ipsec-vpn %s' \
+                %(cmd, name))
+        list.append('%s vpn-left-right then permit tunnel pair-policy ' \
+                'vpn-right-left' %(cmd))
         cmd = 'set security policies from-zone right to-zone left policy'
         list.append('%s vpn-right-left match source-address any' %(cmd))
         list.append('%s vpn-right-left match destination-address any' %(cmd))
         list.append('%s vpn-right-left match application any' %(cmd))
-        list.append('%s vpn-right-left then permit tunnel ipsec-vpn %s' %(cmd, name))
-        list.append('%s vpn-right-left then permit tunnel pair-policy vpn-left-right' %(cmd))
+        list.append('%s vpn-right-left then permit tunnel ipsec-vpn %s' \
+                %(cmd, name))
+        list.append('%s vpn-right-left then permit tunnel pair-policy ' \
+                'vpn-left-right' %(cmd))
 
-        nc = VpnNetconf()
         print 'Adding...'
-        nc.config_set(list = list, svc_client = self.client)
+        self.vsrx.config_set(list = list)
 
     def delete(self, name):
         filter_root = new_ele('filter')
@@ -367,8 +224,7 @@ class VpnConnection():
         sub_ele(filter_security, 'address-book')
 
         route = None
-        nc = VpnNetconf()
-        result = nc.config_get(filter = filter_root, svc_client = self.client)
+        result = self.vsrx.config_get(filter = filter_root)
         ab_list = result.xpath('data/configuration/security/address-book')[0]
         for ab in ab_list:
             if (ab.xpath('name')[0].text == 'book-vpn'):
@@ -380,16 +236,18 @@ class VpnConnection():
         list = []
         if route:
             list.append('delete routing-options static route %s' %(route))
-            list.append('delete security address-book book-vpn address %s' %(name))
+            list.append('delete security address-book book-vpn address %s' \
+                    %(name))
         list.append('delete security ike gateway %s' %(name))
         list.append('delete security ipsec vpn %s' %(name))
         list.append('delete security flow tcp-mss')
-        list.append('delete security policies from-zone left to-zone right policy vpn-left-right')
-        list.append('delete security policies from-zone right to-zone left policy vpn-right-left')
+        list.append('delete security policies from-zone left to-zone right ' \
+                'policy vpn-left-right')
+        list.append('delete security policies from-zone right to-zone left ' \
+                'policy vpn-right-left')
 
-        nc = VpnNetconf()
         print 'Deleting...'
-        nc.config_set(list = list, svc_client = self.client)
+        self.vsrx.config_set(list = list)
 
 
 class VpnShell():
@@ -419,7 +277,21 @@ class VpnShell():
         sub_parser = subparsers.add_parser('service')
         sub_parser.set_defaults(obj_class = VpnService,
                 obj_parser = sub_parser)
-        sub_parser.add_argument('name', nargs = '?', default = None)
+        sub_parser.add_argument('--management-network',
+                metavar = '<arguments>',
+                help = 'Arguments of management virtual network ' \
+                       'network=<name>,route=<prefix>/<length>' \
+                       'tenant=<name>')
+        sub_parser.add_argument('--private-network',
+                metavar = '<arguments>',
+                help = 'Arguments of private virtual network ' \
+                       'network=<name>,route=<prefix>/<length>' \
+                       'tenant=<name>')
+        sub_parser.add_argument('--public-network',
+                metavar = '<arguments>',
+                help = 'Arguments of public virtual network ' \
+                       'network=<name>,route=<prefix>/<length>' \
+                       'tenant=<name>')
 
         sub_parser = subparsers.add_parser('ike-policy')
         sub_parser.set_defaults(obj_class = VpnIkePolicy,
@@ -432,7 +304,7 @@ class VpnShell():
         sub_parser.add_argument('--encryption-algorithm',
                 choices = ['3des-cbc', 'aes-128-cbc', 'aes-192-cbc',
                           'aes-256-cbc', 'des-cbc'],
-                metavar = '[ 3des-cbc | aes-128-cbc | aes-192-cbc | ' +
+                metavar = '[ 3des-cbc | aes-128-cbc | aes-192-cbc | ' \
                           'aes-256-cbc | des-cbc ]',
                 help = 'Encryption algorithm')
         sub_parser.add_argument('--phase1-mode',
@@ -451,7 +323,7 @@ class VpnShell():
         sub_parser.add_argument('--encryption-algorithm',
                 choices = ['3des-cbc', 'aes-128-cbc', 'aes-192-cbc',
                           'aes-256-cbc', 'des-cbc'],
-                metavar = '[ 3des-cbc | aes-128-cbc | aes-192-cbc | ' +
+                metavar = '[ 3des-cbc | aes-128-cbc | aes-192-cbc | ' \
                           'aes-256-cbc | des-cbc ]',
                 help = 'Encryption algorithm')
 
@@ -479,16 +351,19 @@ class VpnShell():
         return args
 
     def run(self, args):
-        client = ConfigClient(args.username, args.password, args.tenant,
-                args.api_server, args.region)
-        obj = args.obj_class(client)
+        config_client = ConfigClient(args.username, args.password,
+                args.tenant, args.region, args.api_server)
+        vsrx = Vsrx(name = 'vsrx-vpn', username = 'root',
+                password = 'passWD', config_client = config_client)
+        obj = args.obj_class(vsrx)
         if args.cmd == 'show':
             obj.show(args.name)
         elif args.cmd == 'help':
             self.do_help(args)
         elif args.cmd == 'add':
             if (args.obj_class == VpnService):
-                obj.add(args.name)
+                obj.add('vsrx-vpn', args.management_network,
+                        args.private_network, args.public_network)
             elif (args.obj_class == VpnIkePolicy):
                 obj.add(args.name, args.auth_algorithm,
                         args.encryption_algorithm, args.phase1_mode)
@@ -500,7 +375,7 @@ class VpnShell():
                         args.dst_subnet, args.peer_address)
         elif args.cmd == 'delete':
             if (args.obj_class == VpnService):
-                obj.delete(args.name)
+                obj.delete('vsrx-vpn')
             elif (args.obj_class == VpnIkePolicy):
                 obj.delete(args.name)
             elif (args.obj_class == VpnIpsecPolicy):
@@ -520,7 +395,7 @@ default_client_args = [
     ('--username', 'admin'),
     ('--password', 'contrail123'),
     ('--region', 'RegionOne'),
-    ('--tenant', 'admin'),
+    ('--tenant', 'demo'),
     ('--api-server', '127.0.0.1')]
 
 if __name__ == '__main__':
