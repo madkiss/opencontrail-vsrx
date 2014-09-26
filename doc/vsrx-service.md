@@ -70,40 +70,39 @@ vSRX can be launched by Contrail service monitor as a service in service chain.
 * A  management virtual network is created in admin tenant for managing all service instances. It's also extended to physical network by gateway, because the orchestration program runs on physical network.
 
 ## 3.2 Preparations
-Given a fresh installation, some configurations need to be done to prepare the demo. Some utilities are required from this repository.
-https://github.com/tonyliu0592/orch
+Given a fresh installation, some configurations need to be done to prepare the demo. Some utilities are required from Github.
 * As described in 1.3.3, nova needs to be updated on all compute nodes.
 * Get code from GitHub.
 ```
-# git clone https://github.com/tonyliu0592/orch.git
-# cd orch
+# git clone https://github.com/tonyliu0592/opencontrail-config.git
+# git clone https://github.com/tonyliu0592/opencontrail-vsrx.git
 # git clone https://github.com/leopoul/ncclient.git
-# mv ncclinet ncclient.git
-# mv ncclient.git/ncclient ./
-# rm -fr ncclient.git
+# export PYTHONPATH=$PYTHONPATH:/path/to/ncclient:/path/to/opencontrail-config
 ```
-Check script `config` to confirm default settings.
+Check script `opencontrail-config/config` to confirm default settings.
 * VN "management" and "public" with public address in administration tenant
 ```
-# config --tenant admin add ipam ipam-default
-# config --tenant admin add network management --ipam ipam-default --subnet 10.84.53.128/28 --route-target 64512:10284
-# config --tenant admin add network public --ipam ipam-default --subnet 10.84.53.48/28 --route-target 64512:10184
+# cd /path/to/opencontrail-config
+# ./config --tenant admin add ipam ipam-default
+# ./config --tenant admin add network management --ipam ipam-default --subnet 10.84.53.128/28 --route-target 64512:10284
+# ./config --tenant admin add network public --ipam ipam-default --subnet 10.84.53.48/28 --route-target 64512:10184
 ```
 * Service template
 ```
-# config --tenant admin add service-template vsrx-nat --mode in-network-nat --type firewall --image "vSRX 12.1X46-D20.5" --flavor m1.medium --interface-type management --interface-type left --interface-type right
+# ./config --tenant admin add service-template vsrx-nat --mode in-network-nat --type firewall --image "vSRX 12.1X46-D20.5" --flavor m1.medium --interface management --interface left --interface right
 ```
 * User tenant "acme"
 ```
-# keystone --os-username admin --os-password <admin password> --os-tenant-name admin --os-auth-url http://127.0.0.1:5000/v2.0/ tenant-create --name acme --enabled true
-# keystone --os-username admin --os-password <admin password> --os-tenant-name admin --os-auth-url http://127.0.0.1:5000/v2.0/ user-role-add --user admin --role admin --tenant acme
+# source /etc/contrail/openstackrc
+# keystone tenant-create --name acme --enabled true
+# keystone user-role-add --user admin --role admin --tenant acme
 ```
 * VN "access"
 ```
-# config --tenant acme add ipam ipam-default
-# config --tenant acme add network access --ipam ipam-default --subnet 192.168.1.0/24  --route-target 64512:11000
+# ./config --tenant acme add ipam ipam-default
+# ./config --tenant acme add network access --ipam ipam-default --subnet 192.168.1.0/24  --route-target 64512:11000
 ```
-* Configure on the gateway
+* Configuration on the gateway
 ```
 chassis {
     fpc 0 {
@@ -223,14 +222,15 @@ routing-instances {
 }
 ```
 ## 3.3 Launch and provisioning service
-Once the cloud is prepared, running utility `vsrx` will do the followings.
+Once the cloud is prepared, running utility `vsrx-nat` will do the followings.
 * Launch vSRX service instance based on pre-defined service template.
 * Attach the management, left and right interfaces of vSRX service instance on management, access and public virtual networks respectively.
-* Since the service instance is across tenants, service policy doesn't work here. Static interface route needs to be added in access virtual network to steer traffic to vSRX.
 * Enable NETCONF service on vSRX.
 * Provisioning vSRX for NAT service.
+Check default settings in vsrx-nat before running it.
 ```
-vsrx --tenant acme
+# cd /path/to/opencontrail-vsrx
+# ./vsrx-nat --management-network network=management,tenant=admin --private-network network=access,route=0.0.0.0/0 --public-network network=public,tenant=admin start
 ```
 At the end, customer will have NAT service in the cloud and be able to access internet.
 
